@@ -25,6 +25,73 @@ struct NestedAttr {
 mod externally_tagged {
     use super::*;
     use pretty_assertions::assert_eq;
+    mod enum_in_field_wrapped_variant {
+        use super::*;
+        use pretty_assertions::assert_eq;
+
+        #[test]
+        fn newtype_in_field() {
+            #[derive(Debug, PartialEq, Deserialize)]
+            enum E {
+                Unit,
+                Newtype(bool),
+            }
+            #[derive(Debug, PartialEq, Deserialize)]
+            struct Root {
+                field: E,
+            }
+            let xml = "<Root><field><Newtype>true</Newtype></field></Root>";
+            assert_eq!(
+                from_str::<Root>(xml).unwrap(),
+                Root {
+                    field: E::Newtype(true)
+                }
+            );
+        }
+
+        #[test]
+        fn tuple_in_field() {
+            #[derive(Debug, PartialEq, Deserialize)]
+            enum E {
+                Unit,
+                Tuple(f64, String),
+            }
+            #[derive(Debug, PartialEq, Deserialize)]
+            struct Root {
+                field: E,
+            }
+            let xml = "<Root><field><Tuple>42</Tuple><Tuple>answer</Tuple></field></Root>";
+            assert_eq!(
+                from_str::<Root>(xml).unwrap(),
+                Root {
+                    field: E::Tuple(42.0, "answer".into())
+                }
+            );
+        }
+
+        #[test]
+        fn struct_in_field() {
+            #[derive(Debug, PartialEq, Deserialize)]
+            enum E {
+                Unit,
+                Struct { float: f64, string: String },
+            }
+            #[derive(Debug, PartialEq, Deserialize)]
+            struct Root {
+                field: E,
+            }
+            let xml = "<Root><field><Struct><float>42</float><string>answer</string></Struct></field></Root>";
+            assert_eq!(
+                from_str::<Root>(xml).unwrap(),
+                Root {
+                    field: E::Struct {
+                        float: 42.0,
+                        string: "answer".into()
+                    }
+                }
+            );
+        }
+    }
 
     /// Type where all fields of struct variants represented by elements
     #[derive(Debug, Deserialize, PartialEq)]

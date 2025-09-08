@@ -51,3 +51,69 @@ fn round_trip_list_of_enums() {
     let deserialized_nodes: Nodes = from_str(serialized_nodes.as_str()).unwrap();
     assert_eq!(deserialized_nodes, nodes);
 }
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+enum RoundE {
+    Unit,
+    Newtype(bool),
+    Tuple(f64, String),
+    Struct { float: f64, string: String },
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct RoundRoot {
+    field: RoundE,
+}
+
+#[test]
+fn roundtrip_enum_in_field_newtype() {
+    let v = RoundRoot {
+        field: RoundE::Newtype(true),
+    };
+    let xml = to_string(&v).unwrap();
+    assert!(xml.contains("<field><Newtype>true</Newtype></field>"));
+    let back: RoundRoot = from_str(&xml).unwrap();
+    assert_eq!(back, v);
+}
+
+#[test]
+fn roundtrip_enum_in_field_tuple() {
+    let v = RoundRoot {
+        field: RoundE::Tuple(42.0, "answer".into()),
+    };
+    let xml = to_string(&v).unwrap();
+    assert!(xml.contains("<field><Tuple>42</Tuple><Tuple>answer</Tuple></field>"));
+    let back: RoundRoot = from_str(&xml).unwrap();
+    assert_eq!(back, v);
+}
+
+#[test]
+fn roundtrip_enum_in_field_struct() {
+    let v = RoundRoot {
+        field: RoundE::Struct {
+            float: 42.0,
+            string: "answer".into(),
+        },
+    };
+    let xml = to_string(&v).unwrap();
+    assert!(
+        xml.contains("<field><Struct><float>42</float><string>answer</string></Struct></field>")
+    );
+    let back: RoundRoot = from_str(&xml).unwrap();
+    assert_eq!(back, v);
+}
+
+#[test]
+fn roundtrip_from_xml_enum_in_field() {
+    // Ensure XML -> struct -> XML is stable for newtype
+    let xml = "<RoundRoot><field><Newtype>true</Newtype></field></RoundRoot>";
+    let v: RoundRoot = from_str(xml).unwrap();
+    assert_eq!(
+        v,
+        RoundRoot {
+            field: RoundE::Newtype(true)
+        }
+    );
+    let xml2 = to_string(&v).unwrap();
+    assert!(xml2.contains("<field><Newtype>true</Newtype></field>"));
+}

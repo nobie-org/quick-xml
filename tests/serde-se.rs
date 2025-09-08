@@ -647,21 +647,24 @@ mod without_root {
                     => "<Root>\
                             <field>Unit</field>\
                         </Root>");
-                err!(newtype:
+                serialize_as!(newtype:
                     Root { field: ExternallyTagged::Newtype(true) }
-                    => Unsupported("cannot serialize enum newtype variant `ExternallyTagged::Newtype`"),
-                    "<Root");
-                err!(tuple:
+                    => "<Root>\
+                            <field><Newtype>true</Newtype></field>\
+                        </Root>");
+                serialize_as!(tuple:
                     Root { field: ExternallyTagged::Tuple(42.0, "answer") }
-                    => Unsupported("cannot serialize enum tuple variant `ExternallyTagged::Tuple`"),
-                    "<Root");
-                err!(struct_:
+                    => "<Root>\
+                            <field><Tuple>42</Tuple><Tuple>answer</Tuple></field>\
+                        </Root>");
+                serialize_as!(struct_:
                     Root { field: ExternallyTagged::Struct {
                         float: 42.0,
                         string: "answer"
                     }}
-                    => Unsupported("cannot serialize enum struct variant `ExternallyTagged::Struct`"),
-                    "<Root");
+                    => "<Root>\
+                            <field><Struct><float>42</float><string>answer</string></Struct></field>\
+                        </Root>");
                 err!(empty_struct:
                     Root { field: ExternallyTagged::Empty {} }
                     => Unsupported("cannot serialize enum struct variant `ExternallyTagged::Empty`"),

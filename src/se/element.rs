@@ -7,8 +7,8 @@ use crate::se::simple_type::{QuoteTarget, SimpleSeq, SimpleTypeSerializer};
 use crate::se::text::TextSerializer;
 use crate::se::{SeError, WriteResult, XmlName};
 use serde::ser::{
-    Impossible, Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant,
-    SerializeTuple, SerializeTupleStruct, SerializeTupleVariant, Serializer,
+    Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
+    SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
 use serde::serde_if_integer128;
 use std::fmt::Write;
@@ -71,10 +71,10 @@ impl<'w, 'k, W: Write> Serializer for ElementSerializer<'w, 'k, W> {
     type SerializeSeq = Self;
     type SerializeTuple = Self;
     type SerializeTupleStruct = Self;
-    type SerializeTupleVariant = Impossible<Self::Ok, Self::Error>;
+    type SerializeTupleVariant = TupleInElement<'w, 'k, W>;
     type SerializeMap = Map<'w, 'k, W>;
     type SerializeStruct = Struct<'w, 'k, W>;
-    type SerializeStructVariant = Struct<'w, 'k, W>;
+    type SerializeStructVariant = StructInElement<'w, 'k, W>;
 
     write_primitive!(serialize_bool(bool));
 
@@ -171,15 +171,21 @@ impl<'w, 'k, W: Write> Serializer for ElementSerializer<'w, 'k, W> {
         name: &'static str,
         _variant_index: u32,
         variant: &'static str,
-        _value: &T,
+        value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        Err(SeError::Unsupported(
-            format!(
-                "cannot serialize enum newtype variant `{}::{}`",
-                name, variant
-            )
-            .into(),
-        ))
+        if variant == TEXT_KEY {
+            return Err(SeError::Unsupported(
+                format!(
+                    "cannot serialize enum newtype variant `{}::$text` as text content value",
+                    name
+                )
+                .into(),
+            ));
+        }
+
+        let mut outer = self.serialize_struct("", 0)?;
+        outer.write_element(variant, value)?;
+        SerializeStruct::end(outer)
     }
 
     #[inline]
@@ -211,13 +217,18 @@ impl<'w, 'k, W: Write> Serializer for ElementSerializer<'w, 'k, W> {
         variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        Err(SeError::Unsupported(
-            format!(
-                "cannot serialize enum tuple variant `{}::{}`",
-                name, variant
-            )
-            .into(),
-        ))
+        if variant == TEXT_KEY {
+            return Err(SeError::Unsupported(
+                format!(
+                    "cannot serialize enum tuple variant `{}::$text` as text content value",
+                    name
+                )
+                .into(),
+            ));
+        }
+
+        let outer = self.serialize_struct("", 0)?;
+        Ok(TupleInElement { outer, variant })
     }
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
@@ -255,13 +266,161 @@ impl<'w, 'k, W: Write> Serializer for ElementSerializer<'w, 'k, W> {
         variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        Err(SeError::Unsupported(
-            format!(
-                "cannot serialize enum struct variant `{}::{}`",
-                name, variant
-            )
-            .into(),
-        ))
+        if variant == TEXT_KEY {
+            return Err(SeError::Unsupported(
+                format!(
+                    "cannot serialize enum struct variant `{}::$text` as text content value",
+                    name
+                )
+                .into(),
+            ));
+        }
+
+        let outer = self.serialize_struct("", 0)?;
+        Ok(StructInElement {
+            outer,
+            variant: XmlName::try_from(variant)?,
+            attrs: String::new(),
+            children: String::new(),
+            write_indent: true,
+        })
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A serializer for tuple variants inside a normal element field, producing
+/// <key><Variant>field1</Variant><Variant>field2</Variant>...</key>
+pub struct TupleInElement<'w, 'k, W: Write> {
+    outer: Struct<'w, 'k, W>,
+    variant: &'static str,
+}
+
+impl<'w, 'k, W: Write> SerializeTupleVariant for TupleInElement<'w, 'k, W> {
+    type Ok = WriteResult;
+    type Error = SeError;
+
+    fn serialize_field<T>(&mut self, value: &T) -> Result<(), Self::Error>
+    where
+        T: ?Sized + Serialize,
+    {
+        self.outer.write_element(self.variant, value)
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        SerializeStruct::end(self.outer)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A serializer for struct variants inside a normal element field, producing
+/// <key><Variant>...fields...</Variant></key>
+pub struct StructInElement<'w, 'k, W: Write> {
+    outer: Struct<'w, 'k, W>,
+    variant: XmlName<'k>,
+    attrs: String,
+    children: String,
+    write_indent: bool,
+}
+
+impl<'w, 'k, W: Write> SerializeStructVariant for StructInElement<'w, 'k, W> {
+    type Ok = WriteResult;
+    type Error = SeError;
+
+    #[inline]
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
+    where
+        T: ?Sized + Serialize,
+    {
+        if let Some(key) = key.strip_prefix('@') {
+            let key = XmlName::try_from(key)?;
+            // Append attribute to attrs buffer
+            self.attrs.push(' ');
+            self.attrs.push_str(key.0);
+            self.attrs.push('=');
+            self.attrs.push('"');
+            value.serialize(SimpleTypeSerializer {
+                writer: &mut self.attrs,
+                target: QuoteTarget::DoubleQAttr,
+                level: self.outer.ser.ser.level,
+            })?;
+            self.attrs.push('"');
+            Ok(())
+        } else {
+            let ser = ContentSerializer {
+                writer: &mut self.children,
+                level: self.outer.ser.ser.level,
+                indent: self.outer.ser.ser.indent.borrow(),
+                // If previous field does not require indent, do not write it
+                write_indent: self.write_indent,
+                allow_primitive: true,
+                expand_empty_elements: self.outer.ser.ser.expand_empty_elements,
+            };
+
+            if key == TEXT_KEY {
+                value.serialize(TextSerializer(ser.into_simple_type_serializer()?))?;
+                // Text was written so we don't need to indent next field
+                self.write_indent = false;
+            } else if key == VALUE_KEY {
+                // If element was written then we need to indent next field unless it is a text field
+                self.write_indent = value.serialize(ser)?.allow_indent();
+            } else {
+                value.serialize(ElementSerializer {
+                    key: XmlName::try_from(key)?,
+                    ser,
+                })?;
+                // Element was written so we need to indent next field unless it is a text field
+                self.write_indent = true;
+            }
+            Ok(())
+        }
+    }
+
+    #[inline]
+    fn end(mut self) -> Result<Self::Ok, Self::Error> {
+        // Write indent before variant if needed
+        if self.outer.write_indent {
+            self.outer
+                .ser
+                .ser
+                .indent
+                .write_indent(&mut self.outer.children)?;
+        }
+
+        // Open <Variant{attrs}> or <Variant{attrs}/> depending on children
+        self.outer.children.push('<');
+        self.outer.children.push_str(self.variant.0);
+        self.outer.children.push_str(&self.attrs);
+
+        if self.children.is_empty() {
+            if self.outer.ser.ser.expand_empty_elements {
+                self.outer.children.push_str("</");
+                self.outer.children.push_str(self.variant.0);
+                self.outer.children.push('>');
+            } else {
+                self.outer.children.push_str("/>");
+                // End of variant, proceed to closing of outer
+                self.outer.write_indent = true;
+                return <Struct<'w, 'k, W> as SerializeStruct>::end(self.outer);
+            }
+        } else {
+            self.outer.children.push('>');
+            self.outer.children.push_str(&self.children);
+            if self.write_indent {
+                self.outer
+                    .ser
+                    .ser
+                    .indent
+                    .write_indent(&mut self.outer.children)?;
+            }
+            self.outer.children.push_str("</");
+            self.outer.children.push_str(self.variant.0);
+            self.outer.children.push('>');
+        }
+
+        self.outer.write_indent = true;
+        <Struct<'w, 'k, W> as SerializeStruct>::end(self.outer)
     }
 }
 
@@ -550,7 +709,7 @@ impl<'w, 'k, W: Write> SerializeMap for Map<'w, 'k, W> {
     where
         T: ?Sized + Serialize,
     {
-        if let Some(_) = self.key.take() {
+        if self.key.take().is_some() {
             return Err(SeError::Custom(
                 "calling `serialize_key` twice without `serialize_value`".to_string(),
             ));

@@ -654,15 +654,41 @@ where
     {
         if self.fixed_name {
             match self.map.de.next()? {
-                // Handles <field>UnitEnumVariant</field>
-                DeEvent::Start(e) => {
-                    // skip <field>, read text after it and ensure that it is ended by </field>
-                    let text = self.map.de.read_text(e.name())?;
-                    if text.is_empty() {
-                        // Map empty text (<field/>) to a special `$text` variant
-                        visitor.visit_enum(SimpleTypeDeserializer::from_text(TEXT_KEY.into()))
-                    } else {
-                        visitor.visit_enum(SimpleTypeDeserializer::from_text(text))
+                // Handles <field>...</field>
+                DeEvent::Start(field_start) => {
+                    // Peek inside the field to detect either text (unit/$text) or nested <Variant>
+                    self.map.skip_whitespaces()?;
+                    match self.map.de.peek()? {
+                        // Nested variant wrapper: delegate to ElementDeserializer
+                        DeEvent::Start(_) => match self.map.de.next()? {
+                            DeEvent::Start(inner_start) => {
+                                let val = visitor.visit_enum(ElementDeserializer {
+                                    start: inner_start,
+                                    de: self.map.de,
+                                })?;
+                                // After inner variant is deserialized, finish the enclosing <field>
+                                self.map.de.read_to_end(field_start.name())?;
+                                Ok(val)
+                            }
+                            _ => unreachable!(),
+                        },
+                        DeEvent::Text(_) => {
+                            let text = self.map.de.read_text(field_start.name())?;
+                            if text.is_empty() {
+                                visitor
+                                    .visit_enum(SimpleTypeDeserializer::from_text(TEXT_KEY.into()))
+                            } else {
+                                visitor.visit_enum(SimpleTypeDeserializer::from_text(text))
+                            }
+                        }
+                        DeEvent::End(e) => {
+                            // Empty field: <field/>
+                            debug_assert_eq!(e.name(), field_start.name());
+                            // Consume End
+                            self.map.de.next()?;
+                            visitor.visit_enum(SimpleTypeDeserializer::from_text(TEXT_KEY.into()))
+                        }
+                        DeEvent::Eof => Err(DeError::UnexpectedEof),
                     }
                 }
                 // SAFETY: we use that deserializer with `fixed_name == true`
