@@ -93,6 +93,35 @@ mod externally_tagged {
         }
     }
 
+    mod nested_enums_roundtrip_like {
+        use super::*;
+        use pretty_assertions::assert_eq;
+
+        #[derive(Debug, PartialEq, Deserialize)]
+        enum Inner {
+            Unit,
+            Newtype(bool),
+        }
+        #[derive(Debug, PartialEq, Deserialize)]
+        enum Outer {
+            Wrap(Inner),
+        }
+
+        #[test]
+        fn newtype() {
+            let xml = "<Wrap><Newtype>true</Newtype></Wrap>";
+            let v: Outer = from_str(xml).unwrap();
+            assert_eq!(v, Outer::Wrap(Inner::Newtype(true)));
+        }
+
+        #[test]
+        fn unit() {
+            let xml = "<Wrap>Unit</Wrap>";
+            let v: Outer = from_str(xml).unwrap();
+            assert_eq!(v, Outer::Wrap(Inner::Unit));
+        }
+    }
+
     /// Type where all fields of struct variants represented by elements
     #[derive(Debug, Deserialize, PartialEq)]
     enum Node {
