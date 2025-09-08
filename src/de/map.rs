@@ -1182,7 +1182,38 @@ where
     where
         V: Visitor<'de>,
     {
-        visitor.visit_enum(self)
+        // Support both wrapper element containing a single variant child and legacy text form.
+        self.de.skip_whitespaces()?;
+        match self.de.peek()? {
+            DeEvent::Start(_) => match self.de.next()? {
+                DeEvent::Start(inner) => {
+                    // Delegate to inner variant element, then consume the wrapper end
+                    let val = visitor.visit_enum(ElementDeserializer {
+                        start: inner,
+                        de: self.de,
+                    })?;
+                    self.de.read_to_end(self.start.name())?;
+                    Ok(val)
+                }
+                _ => unreachable!(),
+            },
+            DeEvent::Text(_) => {
+                let text = self.de.read_text(self.start.name())?;
+                if text.is_empty() {
+                    visitor.visit_enum(SimpleTypeDeserializer::from_text(TEXT_KEY.into()))
+                } else {
+                    visitor.visit_enum(SimpleTypeDeserializer::from_text(text))
+                }
+            }
+            DeEvent::End(e) => {
+                debug_assert_eq!(e.name(), self.start.name());
+                // Consume End
+                self.de.next()?;
+                // Empty wrapper maps to $text empty
+                visitor.visit_enum(SimpleTypeDeserializer::from_text(TEXT_KEY.into()))
+            }
+            DeEvent::Eof => Err(DeError::UnexpectedEof),
+        }
     }
 
     #[inline]

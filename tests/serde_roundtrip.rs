@@ -82,7 +82,7 @@ fn roundtrip_enum_in_field_unit() {
         field: RoundE::Unit,
     };
     let xml = to_string(&v).unwrap();
-    assert!(xml.contains("<field>Unit</field>"));
+    assert!(xml.contains("<field><Unit/></field>") || xml.contains("<field><Unit></Unit></field>"));
     let back: RoundRoot = from_str(&xml).unwrap();
     assert_eq!(back, v);
 }
@@ -106,8 +106,8 @@ enum OuterWrapE {
 fn roundtrip_enum_in_enum_unit() {
     let v = OuterWrapE::Wrap(InnerE::Unit);
     let xml = to_string(&v).unwrap();
-    // Unit inner enum inside newtype variant serializes as text content of <Wrap>
-    assert!(xml.contains("<Wrap>Unit</Wrap>"));
+    // Unit inner enum inside newtype variant serializes as a child element
+    assert!(xml.contains("<Wrap><Unit/></Wrap>") || xml.contains("<Wrap><Unit></Unit></Wrap>"));
     let back: OuterWrapE = from_str(&xml).unwrap();
     assert_eq!(back, v);
 }
@@ -216,4 +216,59 @@ fn roundtrip_from_xml_enum_in_field() {
     );
     let xml2 = to_string(&v).unwrap();
     assert!(xml2.contains("<field><Newtype>true</Newtype></field>"));
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Default)]
+enum DataEnum {
+    #[default]
+    Unit,
+    Newtype(String),
+    Struct {
+        name: String,
+        value: i32,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct ArrayHolder<T> {
+    arr: T,
+}
+
+#[test]
+fn roundtrip_array_field_of_enums_fixed_size() {
+    type PairData = [DataEnum; 2];
+    let v = ArrayHolder::<PairData> {
+        arr: [DataEnum::Unit, DataEnum::Newtype("x".to_string())],
+    };
+    let xml = to_string(&v).unwrap();
+    assert!(xml.contains("<arr><Unit/></arr>"));
+    assert!(xml.contains("<arr><Newtype>x</Newtype></arr>"));
+    let back: ArrayHolder<PairData> = from_str(&xml).unwrap();
+    assert_eq!(back, v);
+}
+
+#[test]
+fn roundtrip_array_field_of_enums_vec_and_legacy() {
+    let v = ArrayHolder::<Vec<DataEnum>> {
+        arr: vec![
+            DataEnum::Unit,
+            DataEnum::Newtype("x".to_string()),
+            DataEnum::Struct {
+                name: "n".into(),
+                value: 1,
+            },
+        ],
+    };
+    let xml = to_string(&v).unwrap();
+    assert!(xml.contains("<arr><Unit/></arr>"));
+    assert!(xml.contains("<arr><Newtype>x</Newtype></arr>"));
+    assert!(xml.contains("<arr><Struct><name>n</name><value>1</value></Struct></arr>"));
+    let back: ArrayHolder<Vec<DataEnum>> = from_str(&xml).unwrap();
+    assert_eq!(back, v);
+
+    // Legacy acceptance per item: <arr>Unit</arr>
+    let legacy = "<ArrayHolder><arr>Unit</arr><arr><Newtype>x</Newtype></arr></ArrayHolder>";
+    let back2: ArrayHolder<Vec<DataEnum>> = from_str(legacy).unwrap();
+    assert_eq!(back2.arr[0], DataEnum::Unit);
+    assert_eq!(back2.arr[1], DataEnum::Newtype("x".into()));
 }

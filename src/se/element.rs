@@ -142,16 +142,18 @@ impl<'w, 'k, W: Write> Serializer for ElementSerializer<'w, 'k, W> {
     /// Otherwise a `<key>variant</key>` is written.
     fn serialize_unit_variant(
         self,
-        name: &'static str,
-        variant_index: u32,
+        _name: &'static str,
+        _variant_index: u32,
         variant: &'static str,
     ) -> Result<Self::Ok, Self::Error> {
         if variant == TEXT_KEY {
             self.ser.write_empty(self.key)
         } else {
-            self.ser.write_wrapped(self.key, |ser| {
-                ser.serialize_unit_variant(name, variant_index, variant)
-            })
+            // Emit a child element for the variant inside the field wrapper
+            let mut outer = self.serialize_struct("", 0)?;
+            // Use unit value to render <Variant/>
+            outer.write_element(variant, &())?;
+            SerializeStruct::end(outer)
         }
     }
 

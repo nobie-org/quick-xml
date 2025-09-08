@@ -645,7 +645,7 @@ mod without_root {
                 serialize_as!(unit:
                     Root { field: ExternallyTagged::Unit }
                     => "<Root>\
-                            <field>Unit</field>\
+                            <field><Unit/></field>\
                         </Root>");
                 serialize_as!(newtype:
                     Root { field: ExternallyTagged::Newtype(true) }
@@ -665,10 +665,12 @@ mod without_root {
                     => "<Root>\
                             <field><Struct><float>42</float><string>answer</string></Struct></field>\
                         </Root>");
-                err!(empty_struct:
+                // Empty struct variant serializes as empty element under field
+                serialize_as!(empty_struct:
                     Root { field: ExternallyTagged::Empty {} }
-                    => Unsupported("cannot serialize enum struct variant `ExternallyTagged::Empty`"),
-                    "<Root");
+                    => "<Root>\
+                            <field><Empty/></field>\
+                        </Root>");
             }
 
             /// The same tests as in `normal_field`, but enum at the second nesting
