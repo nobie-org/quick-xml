@@ -366,24 +366,23 @@ impl<'w, 'k, W: Write> SerializeStructVariant for StructInElement<'w, 'k, W> {
 
             // Try to serialize as a simple type. If it fails (e.g., because it's a struct),
             // then it's definitely not an attribute, so we skip the attribute detection.
-            if value
-                .serialize(SimpleTypeSerializer {
-                    writer: &mut temp_buffer,
-                    target: QuoteTarget::DoubleQAttr,
-                    level: self.outer.ser.ser.level,
-                })
-                .is_ok()
-            {
-                let depth_after = attribute::get_depth();
+            let serialize_result = value.serialize(SimpleTypeSerializer {
+                writer: &mut temp_buffer,
+                target: QuoteTarget::DoubleQAttr,
+                level: self.outer.ser.ser.level,
+            });
 
-                // If depth increased, it means enter_attribute() was called
-                if depth_after > depth_before {
-                    // It's an attribute! Write to attrs buffer
-                    // First, restore the depth to 0 (clean up the flag) to avoid accumulation
-                    while attribute::get_depth() > 0 {
-                        attribute::exit_attribute();
-                    }
+            let depth_after = attribute::get_depth();
 
+            // Clean up depth in ALL paths to prevent leakage
+            if depth_after > depth_before {
+                // Depth increased - clean it up
+                while attribute::get_depth() > depth_before {
+                    attribute::exit_attribute();
+                }
+
+                // If serialization succeeded, write as attribute
+                if serialize_result.is_ok() {
                     let key = XmlName::try_from(key)?;
                     self.attrs.push(' ');
                     self.attrs.push_str(key.0);
@@ -619,22 +618,23 @@ impl<'w, 'k, W: Write> Struct<'w, 'k, W> {
 
             // Try to serialize as a simple type. If it fails (e.g., because it's a struct),
             // then it's definitely not an attribute, so we skip the attribute detection.
-            if value
-                .serialize(SimpleTypeSerializer {
-                    writer: &mut temp_buffer,
-                    target: QuoteTarget::DoubleQAttr,
-                    level: self.ser.ser.level,
-                })
-                .is_ok()
-            {
-                let depth_after = attribute::get_depth();
+            let serialize_result = value.serialize(SimpleTypeSerializer {
+                writer: &mut temp_buffer,
+                target: QuoteTarget::DoubleQAttr,
+                level: self.ser.ser.level,
+            });
 
-                if depth_after > depth_before {
-                    // It's an attribute! Clean up the flag - reset to 0 to avoid accumulation
-                    while attribute::get_depth() > 0 {
-                        attribute::exit_attribute();
-                    }
+            let depth_after = attribute::get_depth();
 
+            // Clean up depth in ALL paths to prevent leakage
+            if depth_after > depth_before {
+                // Depth increased - clean it up
+                while attribute::get_depth() > depth_before {
+                    attribute::exit_attribute();
+                }
+
+                // If serialization succeeded, write as attribute
+                if serialize_result.is_ok() {
                     let key = XmlName::try_from(key)?;
                     self.ser.ser.writer.write_char(' ')?;
                     self.ser.ser.writer.write_str(key.0)?;

@@ -370,12 +370,17 @@ pub mod attribute {
     /// Serializes `value` as an XML attribute.
     /// Intended to use with `#[serde(serialize_with = "...")]` or `#[serde(with = "...")]`.
     /// See example at [`attribute`] module level.
+    ///
+    /// # Implementation Note
+    /// This function increments a thread-local depth counter to signal to the serializer
+    /// that this value should be written as an XML attribute. The serializer (in
+    /// `se/element.rs`) is responsible for detecting this flag and cleaning it up in ALL
+    /// code paths (success or failure) to prevent state leakage.
     pub fn serialize<S, T>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
         T: Serialize,
     {
-        // Mark as attribute but DON'T clear it - the serializer will check and clear
         enter_attribute();
         value.serialize(serializer)
     }
@@ -383,14 +388,21 @@ pub mod attribute {
     /// Deserializes an XML attribute.
     /// Intended to use with `#[serde(deserialize_with = "...")]` or `#[serde(with = "...")]`.
     /// See example at [`attribute`] module level.
+    ///
+    /// # Implementation Note
+    /// Deserialization determines attribute vs element based on the expected field names
+    /// in the struct, so no thread-local state is needed. However, we increment/decrement
+    /// for symmetry with serialization.
     pub fn deserialize<'de, D, T>(deserializer: D) -> Result<T, D::Error>
     where
         D: Deserializer<'de>,
         T: Deserialize<'de>,
     {
-        // Mark as attribute but DON'T clear it - the deserializer will check and clear
         enter_attribute();
-        T::deserialize(deserializer)
+        let result = T::deserialize(deserializer);
+        // Clean up immediately since deserialization doesn't need the flag to persist
+        exit_attribute();
+        result
     }
 }
 
