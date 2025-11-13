@@ -63,7 +63,7 @@ pub mod parser;
 pub mod reader;
 #[cfg(feature = "serialize")]
 pub mod se;
-#[cfg(feature = "serde-types")]
+#[cfg(any(feature = "serialize", feature = "serde-types"))]
 pub mod serde_helpers;
 /// Not an official API, public for integration tests
 #[doc(hidden)]

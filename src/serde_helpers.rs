@@ -291,6 +291,109 @@ macro_rules! impl_deserialize_for_internally_tagged_enum {
     }
 }
 
+/// Provides helper functions to mark a field as an XML attribute by wrapping it
+/// in a struct that serializes/deserializes with an `@` prefix. Intended to use with
+/// [`#[serde(with = "...")]`][with], [`#[serde(deserialize_with = "...")]`][de-with]
+/// and [`#[serde(serialize_with = "...")]`][se-with].
+///
+/// This helper allows the same struct to serialize cleanly to both XML and JSON:
+///
+/// ```
+/// # use pretty_assertions::assert_eq;
+/// use quick_xml::de::from_str;
+/// use quick_xml::se::to_string;
+/// use serde::{Serialize, Deserialize};
+///
+/// #[derive(Serialize, Deserialize, PartialEq, Debug)]
+/// #[serde(rename = "user")]
+/// struct User {
+///     #[serde(with = "quick_xml::serde_helpers::attribute")]
+///     id: u32,
+///
+///     #[serde(with = "quick_xml::serde_helpers::attribute")]
+///     class: String,
+///
+///     name: String,  // Regular element
+/// }
+///
+/// let user = User {
+///     id: 123,
+///     class: "admin".to_string(),
+///     name: "Alice".to_string(),
+/// };
+///
+/// // Serializes to XML with attributes (without @ in the XML)
+/// let xml = r#"<user id="123" class="admin"><name>Alice</name></user>"#;
+/// assert_eq!(to_string(&user).unwrap(), xml);
+/// assert_eq!(from_str::<User>(xml).unwrap(), user);
+///
+/// // The same struct can also serialize to JSON without @ in field names
+/// // {"id": 123, "class": "admin", "name": "Alice"}
+/// ```
+///
+/// This is an alternative to using `#[serde(rename = "@id")]`, which causes
+/// JSON serialization to include `@` in field names, potentially breaking
+/// JSON validation in some systems.
+///
+/// [with]: https://serde.rs/field-attrs.html#with
+/// [de-with]: https://serde.rs/field-attrs.html#deserialize_with
+/// [se-with]: https://serde.rs/field-attrs.html#serialize_with
+pub mod attribute {
+    use super::*;
+
+    thread_local! {
+        static ATTRIBUTE_DEPTH: std::cell::Cell<usize> = std::cell::Cell::new(0);
+    }
+
+    /// Marks that we're entering an attribute serialization
+    #[inline]
+    pub(crate) fn enter_attribute() {
+        ATTRIBUTE_DEPTH.with(|depth| {
+            depth.set(depth.get() + 1);
+        });
+    }
+
+    /// Marks that we're leaving an attribute serialization
+    #[inline]
+    pub(crate) fn exit_attribute() {
+        ATTRIBUTE_DEPTH.with(|depth| {
+            depth.set(depth.get().saturating_sub(1));
+        });
+    }
+
+    /// Gets the current attribute depth
+    #[inline]
+    pub(crate) fn get_depth() -> usize {
+        ATTRIBUTE_DEPTH.with(|depth| depth.get())
+    }
+
+    /// Serializes `value` as an XML attribute.
+    /// Intended to use with `#[serde(serialize_with = "...")]` or `#[serde(with = "...")]`.
+    /// See example at [`attribute`] module level.
+    pub fn serialize<S, T>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        T: Serialize,
+    {
+        // Mark as attribute but DON'T clear it - the serializer will check and clear
+        enter_attribute();
+        value.serialize(serializer)
+    }
+
+    /// Deserializes an XML attribute.
+    /// Intended to use with `#[serde(deserialize_with = "...")]` or `#[serde(with = "...")]`.
+    /// See example at [`attribute`] module level.
+    pub fn deserialize<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        // Mark as attribute but DON'T clear it - the deserializer will check and clear
+        enter_attribute();
+        T::deserialize(deserializer)
+    }
+}
+
 /// Provides helper functions to serialization and deserialization of types
 /// (usually enums) as a text content of an element and intended to use with
 /// [`#[serde(with = "...")]`][with], [`#[serde(deserialize_with = "...")]`][de-with]

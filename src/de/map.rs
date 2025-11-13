@@ -261,16 +261,67 @@ where
 
         if let Some(a) = self.iter.next(slice).transpose()? {
             // try getting map from attributes (key= "value")
-            let (key, value) = a.into();
+            let (key_range, value) = a.into();
             self.source = ValueSource::Attribute(value.unwrap_or_default());
 
             // Attributes in mapping starts from @ prefix
             // TODO: Customization point - may customize prefix
             self.de.key_buf.clear();
-            self.de.key_buf.push('@');
+
+            // Determine whether to add @ prefix based on what fields the struct expects.
+            // This supports both old style #[serde(rename = "@field")] and new style
+            // #[serde(with = "quick_xml::serde_helpers::attribute")] on field named "field".
+            //
+            // Strategy: Check if the expected fields list contains the attribute name
+            // with or without @ prefix, and use whichever one exists.
+            let attr_name_bytes = &slice[key_range.clone()];
+            let attr_name = match decoder.decode(attr_name_bytes) {
+                Ok(Cow::Borrowed(s)) => s,
+                Ok(Cow::Owned(s)) => {
+                    // If we need to allocate, we'll just use the @ prefix (legacy behavior)
+                    // This is a rare case (encoded attribute names)
+                    self.de.key_buf.push('@');
+                    self.de.key_buf.push_str(&s);
+                    let de = QNameDeserializer::from_attr(
+                        QName(attr_name_bytes),
+                        decoder,
+                        &mut self.de.key_buf,
+                    )?;
+                    return seed.deserialize(de).map(Some);
+                }
+                Err(_) => {
+                    // Decoding error - use legacy behavior
+                    self.de.key_buf.push('@');
+                    let de = QNameDeserializer::from_attr(
+                        QName(attr_name_bytes),
+                        decoder,
+                        &mut self.de.key_buf,
+                    )?;
+                    return seed.deserialize(de).map(Some);
+                }
+            };
+
+            // Check if struct expects this attribute with or without @ prefix
+            let prefixed_name = format!("@{}", attr_name);
+            let use_prefix = if self.fields.contains(&prefixed_name.as_str()) {
+                // Old style: struct has field #[serde(rename = "@field")]
+                true
+            } else if self.fields.contains(&attr_name) {
+                // New style: struct has field "field" with #[serde(with = "attribute")]
+                false
+            } else {
+                // Field not in expected list - use legacy behavior (add @ prefix)
+                // This handles the case where struct has #[serde(deny_unknown_fields)]
+                // or uses a flattened field or other advanced serde features
+                true
+            };
+
+            if use_prefix {
+                self.de.key_buf.push('@');
+            }
 
             let de =
-                QNameDeserializer::from_attr(QName(&slice[key]), decoder, &mut self.de.key_buf)?;
+                QNameDeserializer::from_attr(QName(&slice[key_range]), decoder, &mut self.de.key_buf)?;
             seed.deserialize(de).map(Some)
         } else {
             self.skip_whitespaces()?;

@@ -335,8 +335,9 @@ impl<'w, 'k, W: Write> SerializeStructVariant for StructInElement<'w, 'k, W> {
     where
         T: ?Sized + Serialize,
     {
-        if let Some(key) = key.strip_prefix('@') {
-            let key = XmlName::try_from(key)?;
+        // Check for legacy @ prefix approach
+        if let Some(attr_name) = key.strip_prefix('@') {
+            let key = XmlName::try_from(attr_name)?;
             // Append attribute to attrs buffer
             self.attrs.push(' ');
             self.attrs.push_str(key.0);
@@ -348,35 +349,82 @@ impl<'w, 'k, W: Write> SerializeStructVariant for StructInElement<'w, 'k, W> {
                 level: self.outer.ser.ser.level,
             })?;
             self.attrs.push('"');
-            Ok(())
-        } else {
-            let ser = ContentSerializer {
-                writer: &mut self.children,
-                level: self.outer.ser.ser.level,
-                indent: self.outer.ser.ser.indent.borrow(),
-                // If previous field does not require indent, do not write it
-                write_indent: self.write_indent,
-                allow_primitive: true,
-                expand_empty_elements: self.outer.ser.ser.expand_empty_elements,
-            };
-
-            if key == TEXT_KEY {
-                value.serialize(TextSerializer(ser.into_simple_type_serializer()?))?;
-                // Text was written so we don't need to indent next field
-                self.write_indent = false;
-            } else if key == VALUE_KEY {
-                // If element was written then we need to indent next field unless it is a text field
-                self.write_indent = value.serialize(ser)?.allow_indent();
-            } else {
-                value.serialize(ElementSerializer {
-                    key: XmlName::try_from(key)?,
-                    ser,
-                })?;
-                // Element was written so we need to indent next field unless it is a text field
-                self.write_indent = true;
-            }
-            Ok(())
+            return Ok(());
         }
+
+        // For new serde_helpers::attribute approach:
+        // We need to serialize the value to detect if it sets the attribute flag
+        // If it does, we treat it as an attribute
+        #[cfg(feature = "serialize")]
+        {
+            use crate::se::simple_type::SimpleTypeSerializer;
+            use crate::serde_helpers::attribute;
+
+            // Save current depth, serialize, then check if depth increased
+            let depth_before = attribute::get_depth();
+            let mut temp_buffer = String::new();
+
+            // Try to serialize as a simple type. If it fails (e.g., because it's a struct),
+            // then it's definitely not an attribute, so we skip the attribute detection.
+            if value
+                .serialize(SimpleTypeSerializer {
+                    writer: &mut temp_buffer,
+                    target: QuoteTarget::DoubleQAttr,
+                    level: self.outer.ser.ser.level,
+                })
+                .is_ok()
+            {
+                let depth_after = attribute::get_depth();
+
+                // If depth increased, it means enter_attribute() was called
+                if depth_after > depth_before {
+                    // It's an attribute! Write to attrs buffer
+                    // First, restore the depth to 0 (clean up the flag) to avoid accumulation
+                    while attribute::get_depth() > 0 {
+                        attribute::exit_attribute();
+                    }
+
+                    let key = XmlName::try_from(key)?;
+                    self.attrs.push(' ');
+                    self.attrs.push_str(key.0);
+                    self.attrs.push('=');
+                    self.attrs.push('"');
+                    self.attrs.push_str(&temp_buffer);
+                    self.attrs.push('"');
+                    return Ok(());
+                }
+            }
+            // If serialization failed or depth didn't increase, fall through to normal element serialization below
+            // (we'll have to re-serialize, which is inefficient but correct)
+        }
+
+        // Normal element serialization (not an attribute)
+        let ser = ContentSerializer {
+            writer: &mut self.children,
+            level: self.outer.ser.ser.level,
+            indent: self.outer.ser.ser.indent.borrow(),
+            // If previous field does not require indent, do not write it
+            write_indent: self.write_indent,
+            allow_primitive: true,
+            expand_empty_elements: self.outer.ser.ser.expand_empty_elements,
+        };
+
+        if key == TEXT_KEY {
+            value.serialize(TextSerializer(ser.into_simple_type_serializer()?))?;
+            // Text was written so we don't need to indent next field
+            self.write_indent = false;
+        } else if key == VALUE_KEY {
+            // If element was written then we need to indent next field unless it is a text field
+            self.write_indent = value.serialize(ser)?.allow_indent();
+        } else {
+            value.serialize(ElementSerializer {
+                key: XmlName::try_from(key)?,
+                ser,
+            })?;
+            // Element was written so we need to indent next field unless it is a text field
+            self.write_indent = true;
+        }
+        Ok(())
     }
 
     #[inline]
@@ -552,12 +600,56 @@ impl<'w, 'k, W: Write> Struct<'w, 'k, W> {
         T: ?Sized + Serialize,
     {
         //TODO: Customization point: allow user to determine if field is attribute or not
-        if let Some(key) = key.strip_prefix('@') {
-            let key = XmlName::try_from(key)?;
-            self.write_attribute(key, value)
-        } else {
-            self.write_element(key, value)
+
+        // Check for legacy @ prefix
+        if let Some(attr_name) = key.strip_prefix('@') {
+            let key = XmlName::try_from(attr_name)?;
+            return self.write_attribute(key, value);
         }
+
+        // Check for new serde_helpers::attribute approach
+        #[cfg(feature = "serialize")]
+        {
+            use crate::se::simple_type::SimpleTypeSerializer;
+            use crate::serde_helpers::attribute;
+
+            // Save current depth, serialize, then check if depth increased
+            let depth_before = attribute::get_depth();
+            let mut temp_buffer = String::new();
+
+            // Try to serialize as a simple type. If it fails (e.g., because it's a struct),
+            // then it's definitely not an attribute, so we skip the attribute detection.
+            if value
+                .serialize(SimpleTypeSerializer {
+                    writer: &mut temp_buffer,
+                    target: QuoteTarget::DoubleQAttr,
+                    level: self.ser.ser.level,
+                })
+                .is_ok()
+            {
+                let depth_after = attribute::get_depth();
+
+                if depth_after > depth_before {
+                    // It's an attribute! Clean up the flag - reset to 0 to avoid accumulation
+                    while attribute::get_depth() > 0 {
+                        attribute::exit_attribute();
+                    }
+
+                    let key = XmlName::try_from(key)?;
+                    self.ser.ser.writer.write_char(' ')?;
+                    self.ser.ser.writer.write_str(key.0)?;
+                    self.ser.ser.writer.write_char('=')?;
+                    self.ser.ser.writer.write_char('"')?;
+                    self.ser.ser.writer.write_str(&temp_buffer)?;
+                    self.ser.ser.writer.write_char('"')?;
+                    return Ok(());
+                }
+            }
+            // If serialization failed or depth didn't increase, fall through to normal element handling
+        }
+
+        // Normal element
+        self.write_element(key, value)
     }
 
     /// Writes `value` as an attribute
